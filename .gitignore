@@ -1,0 +1,17 @@
+# Python & Environment
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.ipynb_checkpoints/
+
+# Datasets (Large CSV files > 100MB, stored on Google Drive)
+Dataset/
+*.zip
+
+# Editor & Scratch
+.vscode/
+scratch/
+.system_generated/
