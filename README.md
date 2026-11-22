@@ -17,12 +17,17 @@ Sesuai instruksi pengumpulan tugas, repositori ditata dengan format baku berikut
 │   ├── kamus_data.md          # Definisi fitur dan batasan operasional data
 │   └── UTS (...).docx         # Panduan teknis & rubrik penilaian UTS
 ├── Task 1/
-│   ├── figures/               # Gambar grafik evaluasi resolusi tinggi
-│   ├── Regresi.ipynb          # Notebook terstruktur (10 tahap end-to-end)
+│   ├── figures/               # Gambar grafik evaluasi resolusi tinggi Task 1
+│   ├── Regresi.ipynb          # Notebook terstruktur Task 1 (10 tahap end-to-end)
 │   └── prediksi_regresi.csv   # Salinan hasil prediksi Task 1
+├── Task 2/
+│   ├── figures/               # Gambar grafik evaluasi resolusi tinggi Task 2 (fig1–fig8)
+│   ├── Klasifikasi.ipynb      # Notebook terstruktur Task 2 (10 tahap end-to-end)
+│   └── prediksi_klasifikasi.csv # Salinan hasil prediksi Task 2
 ├── kode/
 │   ├── README.md              # Petunjuk eksekusi mandiri untuk reproduksi angka
-│   └── task1_regresi.py       # Skrip satu-perintah untuk mereproduksi Task 1
+│   ├── task1_regresi.py       # Skrip satu-perintah untuk mereproduksi Task 1
+│   └── task2_klasifikasi.py   # Skrip satu-perintah untuk mereproduksi Task 2
 ├── .gitignore                 # Konfigurasi ignore (data besar >100MB, venv, cache)
 ├── requirements.txt           # Daftar dependensi pustaka Python
 ├── prediksi_regresi.csv       # File submission Task 1 (id_paket, p50, p90)
@@ -91,15 +96,46 @@ Evaluasi dilakukan pada metrik resmi **Pinball Loss** untuk kuantil median ($P_{
 
 ---
 
+## 🛡️ Ringkasan Teknis Task 2: Deteksi Transaksi Fraud (Klasifikasi & Optimasi Biaya Risiko)
+
+### 1. Temuan Kritis Audit Label & Eliminasi Target Leakage
+- **Post-Transaction Target Leakage pada `flag_review_manual`**: Fitur `flag_review_manual` bernilai `1` pada **79,90%** transaksi fraud terkonfirmasi di data latih ($2.095 / 2.622$ kasus, $r = +0,4878$) akibat dibukanya peninjauan manual secara retrospektif setelah laporan fraud/chargeback masuk (dengan rata-rata nominal **Rp 1.203.313** dan `trx_1j` = **0,897**), di atas sampel audit rutin acak sebesar **1,20%**. Sebaliknya, pada kondisi saat transaksi terjadi (`klasifikasi_test`), `flag_review_manual = 1` hanya muncul sebesar **1,23%** dengan rata-rata nominal **Rp 287.328** (identik dengan transaksi normal). Mempertahankan fitur bocor ini mengakibatkan anjloknya PR-AUC sebesar **-51,5%** dan pembengkakan biaya operasional **+80,9%** pada kondisi produksi riil. **Fitur ini wajib dihapus.**
+- **Right-Censoring (Keterlambatan Konfirmasi Label) di Akhir Agustus 2025**: Data ditarik pada **31 Agustus 2025**. Prevalensi fraud bulanan stabil pada **0,680%** sepanjang Januari–Juli 2025, namun turun ke **0,463%** di Agustus 2025 dan jatuh menjadi **0,000% (0 fraud dari 4.780 transaksi)** pada **29–31 Agustus 2025** karena proses konfirmasi fraud membutuhkan ~10–14 hari.
+- **Missing Value Struktural, Anomali & Covariate Drift `v15`**: Missing value pada `menit_sejak_trx_terakhir` dan `rasio_nominal_rata2` (**25,46%** di Train = $102.621$ baris, tepat sama dengan jumlah unik `id_pengguna` di Train) 100% merepresentasikan transaksi pertama pengguna (`is_first_trx = 1`). Sebanyak **955 baris** di Train dan **20 baris** di Test memiliki `umur_merchant_hari < 0` (hingga $-274$ hari). Selain itu, fitur anonim `v15` mengalami *temporal drift* linear tajam dari `0,216` (Jan) ke `2,345` (Agu) dan `2,732` (Test, $z = +1,24\sigma$) tanpa korelasi terhadap fraud sehingga wajib dieliminasi.
+
+### 2. Skema Validasi Sadar-Maturitas Label & Pergeseran Pola (*Pattern Shift*)
+- **Kegagalan Random CV & Censored Tail**: Validasi acak 5-Fold menghasilkan PR-AUC semu **0,6532**, sedangkan evaluasi pada ekor *right-censored* (18–31 Agu) anjlok semu ke **0,1122**. Digunakan **Mature Temporal Validation Window** (`21 Juli – 17 Agustus 2025`, $47.602$ transaksi berumur $\ge 14$ hari) yang menghasilkan evaluasi jujur **PR-AUC = 0,4420** pada fitur dasar.
+- **Lonjakan Serangan QRIS 8x di Agustus 2025**: Pangsa fraud pada kanal `qris` melonjak dari **2,9% – 5,0%** (Jan–Jul) menjadi **37,6%** dari seluruh fraud di Agustus 2025 ($92 / 245$ kasus), diiringi lonjakan kategori `toko_online` (**18,4%**) dan `jasa_lainnya` (**16,3%**) serta pengurasan saldo dompet (`persen_saldo >= 0.9` naik ke **46,5%**). Model diadaptasi menggunakan fitur interaksi `qris_x_persen_saldo` dan pembobotan sampel peluruhan waktu eksponensial (*exponential time-decay sample weights*).
+
+### 3. Komparasi Strategi Class Imbalance, Kalibrasi & Aturan Keputusan Berbasis Biaya
+Evaluasi kebijakan keputusan dilakukan pada *Mature Validation Window* ($47.602$ transaksi, $293$ kasus fraud dengan total nilai fraud **Rp 314.236.700**):
+
+| Kebijakan Keputusan / Model | Jumlah Ditandai | Fraud Tertangkap | Biaya Fraud Lolos (Rp) | Biaya Review Manual (Rp) | Total Biaya Risiko (Rp) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **Flag All** (Tandai Semua Transaksi) | 47.602 | 293 (100%) | Rp 0 | Rp 1.190.050.000 | Rp 1.190.050.000 |
+| **Flag None** (Tanpa Peninjauan) | 0 | 0 (0%) | Rp 314.236.700 | Rp 0 | Rp 314.236.700 |
+| Ambang Konstan Standar ($p \ge 0,50$) | 86 | 64 (21,8%) | Rp 211.450.200 | Rp 2.150.000 | Rp 213.600.200 |
+| Ambang Konstan Teroptimasi ($p \ge 0,045$) | 1.124 | 189 (64,5%) | Rp 98.420.500 | Rp 28.100.000 | Rp 126.520.500 |
+| **Aturan Biaya Bayes Teoretis** ($p \cdot \text{nominal} \ge 25.000$) | 912 | 194 (66,2%) | Rp 86.715.000 | Rp 22.800.000 | **Rp 109.515.000** |
+| **Aturan Biaya Bayes Terkalibrasi** ($\tau^* = 0,48$) | **1.584** | **228 (77,8%)** | **Rp 59.985.000** | **Rp 39.600.000** | **Rp 99.585.000** |
+
+- **Penghematan Biaya Operasional**: Aturan keputusan berbasis biaya Bayes terkalibrasi ($p_i \times \text{nominal}_i \ge \tau^* \cdot \text{Rp } 25.000$ dengan kalibrasi *Log-Odds Platt Scaling*, Brier Score = **0,00482**) menurunkan total biaya risiko menjadi **Rp 99.585.000**, menghemat **Rp 214.651.700 (-68,3%)** dibanding tanpa peninjauan (*Flag None*) dan **Rp 1.090.465.000 (-91,6%)** dibanding menandai seluruh transaksi (*Flag All*).
+
+---
+
 ## ⚡ Reproduksi Angka Laporan (One-Command Reproduction)
 
 Sesuai kriteria penilaian ujian lisan (reproduksi hasil dalam 5 menit), jalankan perintah berikut dari direktori utama:
 
 ```bash
+# Reproduksi Task 1 (Regresi Estimasi Waktu Pengiriman)
 python kode/task1_regresi.py
+
+# Reproduksi Task 2 (Klasifikasi Deteksi Fraud & Optimasi Biaya)
+python kode/task2_klasifikasi.py
 ```
 
-Skrip ini akan mengeksekusi pipeline lengkap secara otomatis, menghasilkan grafik evaluasi di `Task 1/figures/`, dan mencetak seluruh metrik kinerja serta memvalidasi kepatuhan file `prediksi_regresi.csv`.
+Skrip ini akan mengeksekusi pipeline lengkap secara otomatis, menghasilkan grafik evaluasi di `Task 1/figures/` dan `Task 2/figures/`, serta mencetak seluruh metrik kinerja dan memvalidasi kepatuhan file `prediksi_regresi.csv` maupun `prediksi_klasifikasi.csv`.
 
 ---
 
